@@ -308,6 +308,10 @@ propPlacementRemote.OnServerEvent:Connect(function(player, action, ...)
 
 	elseif action == "GetBasementProps" then
 		local basementNumber = args[1]
+		if getHouseNumberForPlayer(player) ~= basementNumber then
+			propPlacementRemote:FireClient(player, "BasementPropsData", basementNumber, {})
+			return
+		end
 		local props = playerProps[player.UserId] or {}
 		local propsList = {}
 		for propId, propData in pairs(props) do
@@ -324,8 +328,17 @@ propPlacementRemote.OnServerEvent:Connect(function(player, action, ...)
 		propPlacementRemote:FireClient(player, "BasementPropsData", basementNumber, propsList)
 
 	elseif action == "GetFloorInfo" then
-		local floorInfo = getBasementFloorInfo(args[1])
-		propPlacementRemote:FireClient(player, "FloorInfoData", args[1], floorInfo)
+		local basementNumber = args[1]
+		if getHouseNumberForPlayer(player) ~= basementNumber then
+			propPlacementRemote:FireClient(player, "FloorInfoData", basementNumber, nil)
+			return
+		end
+		local floorInfo = getBasementFloorInfo(basementNumber)
+		propPlacementRemote:FireClient(player, "FloorInfoData", basementNumber, floorInfo)
+
+	elseif action == "SetBuildMode" then
+		local isEnabled = args[1] == true
+		player:SetAttribute("BuildModeActive", isEnabled)
 	end
 end)
 
@@ -398,11 +411,13 @@ end
 --  PLAYER EVENTS
 -- ============================================================
 Players.PlayerAdded:Connect(function(player)
+	player:SetAttribute("BuildModeActive", false)
 	task.wait(1)
 	loadPlayerProps(player)
 end)
 
 Players.PlayerRemoving:Connect(function(player)
+	player:SetAttribute("BuildModeActive", false)
 	savePlayerProps(player.UserId)
 	playerProps[player.UserId]     = nil
 	playerBasements[player.UserId] = nil

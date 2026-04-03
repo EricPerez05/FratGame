@@ -16,6 +16,10 @@ local propTemplates = ReplicatedStorage:WaitForChild("PropTemplates")
 -- Configuration
 local CONFIG = {
 	GRID_SIZE = 4,
+	BUILD_ZONE_ENTER_PADDING = 20,
+	BUILD_ZONE_EXIT_PADDING = 35,
+	BUILD_ZONE_HEIGHT_PADDING = 20,
+	BASEMENT_FLOOR_Y_THRESHOLD = -30,
 }
 
 -- State
@@ -159,27 +163,79 @@ local function createUI()
 end
 
 local ui = createUI()
+local basementFloorCache = {}
+local basementFloorCacheTime = 0
+
+local function getBasementNumberFromInstance(instance)
+	local current = instance
+	while current and current ~= workspace do
+		local num = tonumber(current.Name:match("Basement(%d+)"))
+		if num then
+			return num
+		end
+		current = current.Parent
+	end
+	return nil
+end
+
+local function getZoneInfoFromFloorPart(floorPart)
+	if not floorPart or not floorPart:IsA("BasePart") then return nil end
+	return {
+		position = floorPart.Position,
+		size = floorPart.Size,
+		topY = floorPart.Position.Y + floorPart.Size.Y / 2,
+		bottomY = floorPart.Position.Y - floorPart.Size.Y / 2,
+	}
+end
+
+local function getBasementFloorCandidates()
+	local now = os.clock()
+	if now - basementFloorCacheTime < 2 and #basementFloorCache > 0 then
+		return basementFloorCache
+	end
+
+	local floors = {}
+	for _, descendant in ipairs(workspace:GetDescendants()) do
+		if descendant:IsA("BasePart") and descendant.Name == "ConcreteFloor" and descendant.Position.Y <= CONFIG.BASEMENT_FLOOR_Y_THRESHOLD then
+			local basementNumber = getBasementNumberFromInstance(descendant)
+			if basementNumber then
+				table.insert(floors, {
+					basementNumber = basementNumber,
+					zoneInfo = getZoneInfoFromFloorPart(descendant),
+				})
+			end
+		end
+	end
+
+	basementFloorCache = floors
+	basementFloorCacheTime = now
+	return basementFloorCache
+end
 
 -- Get physical grid lines from basement
 local function getPhysicalGridParts()
 	local basementsFolder = workspace:FindFirstChild("Basements")
 	if not basementsFolder then return {} end
-	
-	local basement = basementsFolder:FindFirstChild("Basement" .. currentBasementNumber)
-	if not basement then return {} end
-	
-	local mainRoom = basement:FindFirstChild("Main Room")
-	if not mainRoom then return {} end
-	
-	local gridFolder = mainRoom:FindFirstChild("PropGrid")
-	if not gridFolder then return {} end
-	
+
 	local parts = {}
-	for _, part in pairs(gridFolder:GetChildren()) do
-		if part:IsA("BasePart") then
-			table.insert(parts, part)
+	local seen = {}
+
+	for _, basementData in ipairs(getBasementFloorCandidates()) do
+		local basement = basementsFolder:FindFirstChild("Basement" .. basementData.basementNumber)
+		if basement then
+			for _, descendant in ipairs(basement:GetDescendants()) do
+				if descendant.Name == "PropGrid" then
+					for _, part in ipairs(descendant:GetDescendants()) do
+						if part:IsA("BasePart") and not seen[part] then
+							seen[part] = true
+							table.insert(parts, part)
+						end
+					end
+				end
+			end
 		end
 	end
+
 	return parts
 end
 
@@ -255,6 +311,7 @@ end
 function toggleBuildMode(enabled)
 	isBuildMode = enabled
 	ui.MainFrame.Visible = enabled
+	propPlacementRemote:FireServer("SetBuildMode", enabled)
 
 	if enabled then
 		-- hide player and ceiling, move camera up
@@ -419,44 +476,28 @@ local function checkBasementLocation()
 	if not hrp then return end
 	
 	local position = hrp.Position
-	
-	-- Check if in any basement
-	local basementsFolder = workspace:FindFirstChild("Basements")
-	if not basementsFolder then return end
-	
-	for i = 1, 4 do
-		local basement = basementsFolder:FindFirstChild("Basement" .. i)
-		if basement then
-			local floorInfo = nil
-			local mainRoom = basement:FindFirstChild("Main Room")
-			if mainRoom then
-				local floor = mainRoom:FindFirstChild("ConcreteFloor")
-				if floor then
-					floorInfo = {
-						position = floor.Position,
-						size = floor.Size,
-						topY = floor.Position.Y + floor.Size.Y / 2
-					}
-				end
-			end
-			
-			if floorInfo then
-				local inBasement = math.abs(position.X - floorInfo.position.X) < floorInfo.size.X / 2 + 5
-					and math.abs(position.Z - floorInfo.position.Z) < floorInfo.size.Z / 2 + 5
-					and position.Y < floorInfo.topY + 10
-				
-				if inBasement then
-					if currentBasementNumber ~= i then
-						currentBasementNumber = i
-						ui.ToggleButton.Visible = true
-						
-						if isBuildMode then
-							propPlacementRemote:FireServer("GetFloorInfo", currentBasementNumber)
-							propPlacementRemote:FireServer("GetBasementProps", currentBasementNumber)
-						end
+
+	for _, basementData in ipairs(getBasementFloorCandidates()) do
+		local basementNumber = basementData.basementNumber
+		local zoneInfo = basementData.zoneInfo
+		if basementNumber and zoneInfo then
+			local edgePadding = (currentBasementNumber == basementNumber) and CONFIG.BUILD_ZONE_EXIT_PADDING or CONFIG.BUILD_ZONE_ENTER_PADDING
+			local inBasement = math.abs(position.X - zoneInfo.position.X) < zoneInfo.size.X / 2 + edgePadding
+				and math.abs(position.Z - zoneInfo.position.Z) < zoneInfo.size.Z / 2 + edgePadding
+				and position.Y < zoneInfo.topY + CONFIG.BUILD_ZONE_HEIGHT_PADDING
+				and position.Y > zoneInfo.bottomY - CONFIG.BUILD_ZONE_HEIGHT_PADDING
+
+			if inBasement then
+				if currentBasementNumber ~= basementNumber then
+					currentBasementNumber = basementNumber
+					ui.ToggleButton.Visible = true
+
+					if isBuildMode then
+						propPlacementRemote:FireServer("GetFloorInfo", currentBasementNumber)
+						propPlacementRemote:FireServer("GetBasementProps", currentBasementNumber)
 					end
-					return
 				end
+				return
 			end
 		end
 	end
