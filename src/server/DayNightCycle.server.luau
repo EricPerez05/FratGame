@@ -55,8 +55,8 @@ end)
 -- =========================
 -- CONFIG
 -- =========================
-local DAY_DURATION = 480   -- 10 minutes for recruitment/day
-local NIGHT_DURATION =  120 -- optional night
+local DAY_DURATION = 600   -- 10 minutes for recruitment/day
+local NIGHT_DURATION = 0   -- keep timer reset immediate; set >0 only if you want a 0-hold phase
 local UPDATE_INTERVAL = 0.1    -- seconds
 
 -- Lighting config
