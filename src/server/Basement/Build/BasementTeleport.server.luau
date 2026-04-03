@@ -146,6 +146,9 @@ for i = 1, 4 do
 		local character = hit.Parent
 		local player = Players:GetPlayerFromCharacter(character)
 		if not player then return end
+		if player:GetAttribute("BuildModeActive") then
+			return
+		end
 
 		-- Only the owner of this basement can use this platform
 		local ownedHouseNum = getHouseNumberForPlayer(player)
