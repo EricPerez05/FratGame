@@ -1,4 +1,3 @@
-local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
 
 local player = Players.LocalPlayer
@@ -124,43 +123,30 @@ Label.TextStrokeTransparency = 0.5
 Label.Text = "[ 10:00:00 ]"
 Label.Parent = Background
 
--- Timer Logic
-local TOTAL_DURATION = 600  -- 10 minutes in seconds
-local startTime = tick()
-local rushStarted = false
+-- Timer Logic (server-driven)
+local TOTAL_DURATION = 600 -- 10 minutes in seconds
 
-RunService.RenderStepped:Connect(function()
-	local elapsed = tick() - startTime
-	local timeLeft = math.max(0, TOTAL_DURATION - elapsed)
-	
-	-- Calculate minutes, seconds, milliseconds
-	local minutes = math.floor(timeLeft / 60)
-	local seconds = math.floor(timeLeft % 60)
-	local milliseconds = math.floor((timeLeft % 1) * 100)
-	
-	-- Update text
-	Label.Text = string.format("[ %02d:%02d:%02d ]", minutes, seconds, milliseconds)
-	
-	-- Update bar (synced with countdown)
-	local pct = timeLeft / TOTAL_DURATION
-	Bar.Size = UDim2.new(pct, 0, 1, 0)
-	
-	-- Rush event trigger and reset
-	if timeLeft <= 0 and not rushStarted then
-		rushStarted = true
-		print("RUSH EVENT STARTED")
-		Label.Text = "[ 00:00:00 ]"
-		-- Reset timer
-		task.wait(0.1)
-		startTime = tick()
-		rushStarted = false
-	end
-end)
+local function updateRushTimer(timeLeft)
+	local safeTimeLeft = math.max(0, tonumber(timeLeft) or 0)
+	local minutes = math.floor(safeTimeLeft / 60)
+	local seconds = math.floor(safeTimeLeft % 60)
+
+	Label.Text = string.format("[ %02d:%02d:%02d ]", minutes, seconds, 0)
+	Bar.Size = UDim2.new(safeTimeLeft / TOTAL_DURATION, 0, 1, 0)
+end
+
+updateRushTimer(TOTAL_DURATION)
 
 local popupEvents = game:GetService("ReplicatedStorage"):WaitForChild("PopupEvents")
+local rushTimer = popupEvents:WaitForChild("RushTimer")
 local dayUpdate = popupEvents:WaitForChild("DayUpdate")
 
+rushTimer.OnClientEvent:Connect(function(secondsLeft)
+	updateRushTimer(secondsLeft)
+end)
+
 dayUpdate.OnClientEvent:Connect(function(day)
+	if not dayLabels[day] then return end
 	for i, d in ipairs(dayLabels) do
 		d.box.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 		d.box.BackgroundTransparency = 0.4

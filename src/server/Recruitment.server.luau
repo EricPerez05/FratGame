@@ -13,7 +13,6 @@ end
 
 local recruitEvent = popupEvents:FindFirstChild("NPCRecruited") or popupEvents:WaitForChild("NPCRecruited", 10)
 local xpEvent = popupEvents:FindFirstChild("XPGained") or popupEvents:WaitForChild("XPGained", 10)
-local timerEvent = popupEvents:FindFirstChild("RushTimer") or popupEvents:WaitForChild("RushTimer", 10)
 
 
 local GameConfig = require(ReplicatedStorage:WaitForChild("GameConfig"))
@@ -26,12 +25,7 @@ local playerHouses = GameConfig.playerHouses
 
 local recruitCooldowns = {}
 local recruitedNPCs    = {}
-local currentTimeLeft = CONFIG.DAY_DURATION
-
--- Server-wide Rush Timer
-local DAY_DURATION = 600 -- 10 minutes in seconds
 local recruitsToday = {}  -- tracks how many NPCs each player recruited
-local currentTimeLeft = DAY_DURATION
 
 
 
@@ -297,34 +291,6 @@ task.spawn(function()
 		-- Optional: notify players
 		for _, player in ipairs(Players:GetPlayers()) do
 			showMessage(player, "🏫 New Rush Period! You can recruit again!")
-		end
-	end
-end)
-
--- GLOBAL RUSH TIMER LOOP
-task.spawn(function()
-	while true do
-		task.wait(1)
-		currentTimeLeft -= 1
-
-		-- Fire current time to all players
-		for _, player in ipairs(Players:GetPlayers()) do
-			timerEvent:FireClient(player, currentTimeLeft)
-		end
-
-		if currentTimeLeft <= 0 then
-			currentTimeLeft = DAY_DURATION
-			print("[RecruitmentSystem] New Rush Period started!")
-
-			-- reset daily recruits
-			for player, _ in pairs(recruitsToday) do
-				recruitsToday[player] = 0
-			end
-
-			-- Notify all players
-			for _, player in ipairs(Players:GetPlayers()) do
-				showMessage(player, "🏫 New Rush Period! You can recruit again!")
-			end
 		end
 	end
 end)
