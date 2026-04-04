@@ -18,6 +18,7 @@ local xpEvent = popupEvents:FindFirstChild("XPGained") or popupEvents:WaitForChi
 local GameConfig = require(ReplicatedStorage:WaitForChild("GameConfig"))
 local CONFIG     = GameConfig.RECRUITMENT
 local HOUSES_CFG = GameConfig.HOUSES
+GameConfig.playerHouses = GameConfig.playerHouses or {}
 
 local housesFolder = workspace:WaitForChild(HOUSES_CFG.HOUSES_FOLDER)
 
@@ -26,6 +27,17 @@ local playerHouses = GameConfig.playerHouses
 local recruitCooldowns = {}
 local recruitedNPCs    = {}
 local recruitsToday = {}  -- tracks how many NPCs each player recruited
+
+local function getDoorTouchPart(door)
+	if not door then return nil end
+	if door:IsA("BasePart") then
+		return door
+	end
+	if door:IsA("Model") then
+		return door.PrimaryPart or door:FindFirstChildWhichIsA("BasePart", true)
+	end
+	return nil
+end
 
 
 
@@ -80,12 +92,13 @@ local function getDoorPosition(house)
 	end
 
 	local door = houseFolder:FindFirstChild(HOUSES_CFG.DOOR_PART)
-	if not door then
+	local doorPart = getDoorTouchPart(door)
+	if not doorPart then
 		warn("[RecruitmentSystem] No Door part found in " .. houseName)
 		return nil
 	end
 
-	local pos = door.Position + Vector3.new(0, 0, CONFIG.DOOR_OFFSET)
+	local pos = doorPart.Position + Vector3.new(0, 0, CONFIG.DOOR_OFFSET)
 	print("[RecruitmentSystem] Target position for " .. houseName .. ": " .. tostring(pos))
 	return pos
 end
@@ -238,9 +251,10 @@ end
 
 for _, house in ipairs(housesFolder:GetChildren()) do
 	local door = house:FindFirstChild(HOUSES_CFG.DOOR_PART)
-	if not door then continue end
+	local doorPart = getDoorTouchPart(door)
+	if not doorPart then continue end
 
-	door.Touched:Connect(function(hit)
+	doorPart.Touched:Connect(function(hit)
 		local character = hit.Parent
 		local player = Players:GetPlayerFromCharacter(character)
 		if not player then return end
