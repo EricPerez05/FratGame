@@ -12,6 +12,7 @@ local playerGui = player:WaitForChild("PlayerGui")
 
 local propPlacementRemote = ReplicatedStorage:WaitForChild("PropPlacementRemote")
 local propTemplates = ReplicatedStorage:WaitForChild("PropTemplates")
+local buildModeFolder = ReplicatedStorage:FindFirstChild("Build Mode")
 
 -- Configuration
 local CONFIG = {
@@ -30,19 +31,238 @@ local selectedTemplate = nil
 local currentGridParts = {}
 local hoverVisual = nil
 local placedProps = {}
+local selectedCategory = "bars"
+
+local toggleBuildMode
+local onTemplateSelected
+
+local function getCatalogFolder(categoryName)
+	if buildModeFolder and buildModeFolder:IsA("Folder") then
+		return buildModeFolder:FindFirstChild(categoryName)
+	end
+	return nil
+end
+
+local function getTemplateForPlacement(itemName)
+	local template = propTemplates:FindFirstChild(itemName)
+	if template then
+		return template
+	end
+
+	local bars = getCatalogFolder("bars")
+	if bars then
+		template = bars:FindFirstChild(itemName) or bars:FindFirstChild(itemName, true)
+		if template then return template end
+	end
+
+	local stools = getCatalogFolder("stools")
+	if stools then
+		template = stools:FindFirstChild(itemName) or stools:FindFirstChild(itemName, true)
+		if template then return template end
+	end
+
+	return nil
+end
+
+local function resolveRenderableInstance(source)
+	if not source then return nil end
+	if source:IsA("BasePart") or source:IsA("Model") then
+		return source
+	end
+
+	for _, child in ipairs(source:GetDescendants()) do
+		if child:IsA("Model") then
+			return child
+		end
+	end
+
+	for _, child in ipairs(source:GetDescendants()) do
+		if child:IsA("BasePart") then
+			return child
+		end
+	end
+
+	return nil
+end
+
+local function getPreviewPrimaryPart(instance)
+	if instance:IsA("BasePart") then
+		return instance
+	end
+	if instance:IsA("Model") then
+		return instance.PrimaryPart or instance:FindFirstChildWhichIsA("BasePart", true)
+	end
+	return nil
+end
+
+local function createItemPreview(previewFrame, source)
+	previewFrame.BackgroundColor3 = Color3.fromRGB(36, 36, 36)
+	previewFrame.Ambient = Color3.fromRGB(210, 210, 210)
+	previewFrame.LightColor = Color3.fromRGB(255, 255, 255)
+	previewFrame.LightDirection = Vector3.new(-1, -1, -1)
+
+	local renderSource = resolveRenderableInstance(source)
+	if not renderSource then
+		return false
+	end
+
+	local worldModel = Instance.new("WorldModel")
+	worldModel.Parent = previewFrame
+
+	local previewClone = renderSource:Clone()
+	local primaryPart = getPreviewPrimaryPart(previewClone)
+	if not primaryPart then
+		previewClone:Destroy()
+		return false
+	end
+
+	if previewClone:IsA("BasePart") then
+		previewClone.Anchored = true
+		previewClone.CFrame = CFrame.new(0, previewClone.Size.Y * 0.5, 0)
+	else
+		for _, desc in ipairs(previewClone:GetDescendants()) do
+			if desc:IsA("BasePart") then
+				desc.Anchored = true
+				desc.AssemblyLinearVelocity = Vector3.zero
+				desc.AssemblyAngularVelocity = Vector3.zero
+			end
+		end
+		previewClone:PivotTo(CFrame.new(0, 0, 0))
+	end
+
+	previewClone.Parent = worldModel
+
+	local camera = Instance.new("Camera")
+	previewFrame.CurrentCamera = camera
+	camera.Parent = previewFrame
+
+	local cframe, size
+	if previewClone:IsA("Model") then
+		cframe, size = previewClone:GetBoundingBox()
+	else
+		cframe, size = previewClone.CFrame, previewClone.Size
+	end
+
+	local maxDim = math.max(size.X, size.Y, size.Z)
+	local distance = math.max(maxDim * 2.4, 3)
+	camera.CFrame = CFrame.new(cframe.Position + Vector3.new(distance, distance * 0.75, distance), cframe.Position)
+	camera.FieldOfView = 50
+	return true
+end
+
+local function updateSelectionVisuals(propsContainer)
+	for _, child in ipairs(propsContainer:GetChildren()) do
+		if child:IsA("TextButton") then
+			if child.Name == selectedTemplate then
+				child.BackgroundColor3 = Color3.fromRGB(95, 140, 220)
+			else
+				child.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+			end
+		end
+	end
+end
+
+local function populateCategoryItems(screenGui, categoryName)
+	local propsContainer = screenGui.MainFrame.PropsContainer
+	for _, child in ipairs(propsContainer:GetChildren()) do
+		if not child:IsA("UIGridLayout") and not child:IsA("UIPadding") then
+			child:Destroy()
+		end
+	end
+
+	local sourceFolder = getCatalogFolder(categoryName)
+	if not sourceFolder then
+		warn("[BuildModeClient] Missing Build Mode/" .. categoryName .. " folder in ReplicatedStorage")
+		propsContainer.CanvasSize = UDim2.new(0, 0, 0, 0)
+		return
+	end
+
+	for _, template in ipairs(sourceFolder:GetChildren()) do
+		local propButton = Instance.new("TextButton")
+		propButton.Name = template.Name
+		propButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+		propButton.Text = ""
+		propButton.AutoButtonColor = false
+		propButton.Parent = propsContainer
+
+		local btnCorner = Instance.new("UICorner")
+		btnCorner.CornerRadius = UDim.new(0, 8)
+		btnCorner.Parent = propButton
+
+		local previewFrame = Instance.new("ViewportFrame")
+		previewFrame.Size = UDim2.new(1, -8, 1, -36)
+		previewFrame.Position = UDim2.new(0, 4, 0, 4)
+		previewFrame.BackgroundColor3 = Color3.fromRGB(36, 36, 36)
+		previewFrame.BorderSizePixel = 0
+		previewFrame.Parent = propButton
+
+		local previewCorner = Instance.new("UICorner")
+		previewCorner.CornerRadius = UDim.new(0, 6)
+		previewCorner.Parent = previewFrame
+
+		local previewOk = createItemPreview(previewFrame, template)
+		if not previewOk then
+			local noPreviewLabel = Instance.new("TextLabel")
+			noPreviewLabel.Size = UDim2.fromScale(1, 1)
+			noPreviewLabel.BackgroundTransparency = 1
+			noPreviewLabel.Text = "No Preview"
+			noPreviewLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+			noPreviewLabel.TextSize = 12
+			noPreviewLabel.Font = Enum.Font.Gotham
+			noPreviewLabel.Parent = previewFrame
+		end
+
+		local nameLabel = Instance.new("TextLabel")
+		nameLabel.Size = UDim2.new(1, -8, 0, 18)
+		nameLabel.Position = UDim2.new(0, 4, 1, -30)
+		nameLabel.BackgroundTransparency = 1
+		nameLabel.Text = template.Name
+		nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+		nameLabel.TextSize = 12
+		nameLabel.Font = Enum.Font.Gotham
+		nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+		nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+		nameLabel.Parent = propButton
+
+		local priceLabel = Instance.new("TextLabel")
+		priceLabel.Size = UDim2.new(1, -8, 0, 16)
+		priceLabel.Position = UDim2.new(0, 4, 1, -16)
+		priceLabel.BackgroundTransparency = 1
+		priceLabel.Text = "$" .. (template:GetAttribute("Price") or 0)
+		priceLabel.TextColor3 = Color3.fromRGB(110, 255, 130)
+		priceLabel.TextSize = 12
+		priceLabel.Font = Enum.Font.GothamBold
+		priceLabel.TextXAlignment = Enum.TextXAlignment.Left
+		priceLabel.Parent = propButton
+
+		propButton.MouseButton1Click:Connect(function()
+			selectedTemplate = template.Name
+			updateSelectionVisuals(propsContainer)
+			onTemplateSelected()
+		end)
+	end
+
+	local grid = propsContainer:FindFirstChildOfClass("UIGridLayout")
+	if grid then
+		propsContainer.CanvasSize = UDim2.new(0, 0, 0, grid.AbsoluteContentSize.Y + 8)
+	end
+
+	updateSelectionVisuals(propsContainer)
+end
 
 -- Create UI
 local function createUI()
 	local screenGui = Instance.new("ScreenGui")
 	screenGui.Name = "BasementBuildUI"
 	screenGui.ResetOnSpawn = false
+	screenGui.IgnoreGuiInset = true
 	screenGui.Parent = playerGui
 	
 	-- Main frame
 	local mainFrame = Instance.new("Frame")
 	mainFrame.Name = "MainFrame"
-	mainFrame.Size = UDim2.new(0, 300, 0, 400)
-	mainFrame.Position = UDim2.new(1, -320, 0.5, -200)
+	mainFrame.Size = UDim2.new(1, -24, 0, 240)
+	mainFrame.Position = UDim2.new(0, 12, 1, -252)
 	mainFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 	mainFrame.BorderSizePixel = 0
 	mainFrame.Visible = false
@@ -52,83 +272,116 @@ local function createUI()
 	corner.CornerRadius = UDim.new(0, 10)
 	corner.Parent = mainFrame
 	
+	local mainStroke = Instance.new("UIStroke")
+	mainStroke.Thickness = 1
+	mainStroke.Color = Color3.fromRGB(72, 72, 72)
+	mainStroke.Parent = mainFrame
+
 	-- Title
 	local title = Instance.new("TextLabel")
 	title.Name = "Title"
-	title.Size = UDim2.new(1, 0, 0, 50)
+	title.Size = UDim2.new(0, 240, 0, 40)
 	title.Position = UDim2.new(0, 0, 0, 0)
 	title.BackgroundTransparency = 1
-	title.Text = "Basement Props"
+	title.Text = "Build Mode Catalog"
 	title.TextColor3 = Color3.fromRGB(255, 255, 255)
-	title.TextSize = 24
+	title.TextSize = 22
 	title.Font = Enum.Font.GothamBold
 	title.Parent = mainFrame
+
+	local headerPadding = Instance.new("UIPadding")
+	headerPadding.PaddingLeft = UDim.new(0, 14)
+	headerPadding.Parent = title
+
+	local tabsFrame = Instance.new("Frame")
+	tabsFrame.Name = "TabsFrame"
+	tabsFrame.Size = UDim2.new(0, 220, 0, 36)
+	tabsFrame.Position = UDim2.new(0, 250, 0, 6)
+	tabsFrame.BackgroundTransparency = 1
+	tabsFrame.Parent = mainFrame
+
+	local tabsLayout = Instance.new("UIListLayout")
+	tabsLayout.FillDirection = Enum.FillDirection.Horizontal
+	tabsLayout.Padding = UDim.new(0, 8)
+	tabsLayout.Parent = tabsFrame
+
+	local function createTabButton(tabName)
+		local tabButton = Instance.new("TextButton")
+		tabButton.Name = tabName
+		tabButton.Size = UDim2.new(0, 100, 1, 0)
+		tabButton.BackgroundColor3 = Color3.fromRGB(58, 58, 58)
+		tabButton.Text = string.upper(tabName)
+		tabButton.TextColor3 = Color3.fromRGB(240, 240, 240)
+		tabButton.TextSize = 13
+		tabButton.Font = Enum.Font.GothamBold
+		tabButton.Parent = tabsFrame
+
+		local tabCorner = Instance.new("UICorner")
+		tabCorner.CornerRadius = UDim.new(0, 8)
+		tabCorner.Parent = tabButton
+
+		tabButton.MouseButton1Click:Connect(function()
+			selectedCategory = tabName
+			populateCategoryItems(screenGui, selectedCategory)
+
+			for _, child in ipairs(tabsFrame:GetChildren()) do
+				if child:IsA("TextButton") then
+					if child.Name == selectedCategory then
+						child.BackgroundColor3 = Color3.fromRGB(95, 140, 220)
+					else
+						child.BackgroundColor3 = Color3.fromRGB(58, 58, 58)
+					end
+				end
+			end
+		end)
+
+		return tabButton
+	end
+
+	local barsTab = createTabButton("bars")
+	local stoolsTab = createTabButton("stools")
+	barsTab.BackgroundColor3 = Color3.fromRGB(95, 140, 220)
 	
 	-- Props container
 	local propsContainer = Instance.new("ScrollingFrame")
 	propsContainer.Name = "PropsContainer"
-	propsContainer.Size = UDim2.new(1, -20, 1, -120)
-	propsContainer.Position = UDim2.new(0, 10, 0, 60)
+	propsContainer.Size = UDim2.new(1, -20, 1, -76)
+	propsContainer.Position = UDim2.new(0, 10, 0, 50)
 	propsContainer.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 	propsContainer.BorderSizePixel = 0
 	propsContainer.ScrollBarThickness = 6
+	propsContainer.CanvasSize = UDim2.new(0, 0, 0, 0)
 	propsContainer.Parent = mainFrame
 	
 	local containerCorner = Instance.new("UICorner")
 	containerCorner.Parent = propsContainer
+
+	local containerPadding = Instance.new("UIPadding")
+	containerPadding.PaddingLeft = UDim.new(0, 8)
+	containerPadding.PaddingRight = UDim.new(0, 8)
+	containerPadding.PaddingTop = UDim.new(0, 8)
+	containerPadding.PaddingBottom = UDim.new(0, 8)
+	containerPadding.Parent = propsContainer
 	
 	local propsLayout = Instance.new("UIGridLayout")
-	propsLayout.CellSize = UDim2.new(0, 80, 0, 80)
-	propsLayout.CellPadding = UDim2.new(0, 10, 0, 10)
+	propsLayout.CellSize = UDim2.new(0, 126, 0, 128)
+	propsLayout.CellPadding = UDim2.new(0, 8, 0, 8)
+	propsLayout.SortOrder = Enum.SortOrder.Name
 	propsLayout.Parent = propsContainer
-	
-	-- Populate props
-	for _, template in pairs(propTemplates:GetChildren()) do
-		local propButton = Instance.new("TextButton")
-		propButton.Name = template.Name
-		propButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-		propButton.Text = template.Name
-		propButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-		propButton.TextSize = 12
-		propButton.Font = Enum.Font.Gotham
-		propButton.Parent = propsContainer
-		
-		local btnCorner = Instance.new("UICorner")
-		btnCorner.Parent = propButton
-		
-		local priceLabel = Instance.new("TextLabel")
-		priceLabel.Size = UDim2.new(1, 0, 0, 20)
-		priceLabel.Position = UDim2.new(0, 0, 1, -20)
-		priceLabel.BackgroundTransparency = 1
-		priceLabel.Text = "$" .. (template:GetAttribute("Price") or 0)
-		priceLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
-		priceLabel.TextSize = 14
-		priceLabel.Font = Enum.Font.GothamBold
-		priceLabel.Parent = propButton
-		
-		propButton.MouseButton1Click:Connect(function()
-			selectedTemplate = template.Name
-			-- Highlight selected
-			for _, btn in pairs(propsContainer:GetChildren()) do
-				if btn:IsA("TextButton") then
-					btn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-				end
-			end
-			propButton.BackgroundColor3 = Color3.fromRGB(100, 150, 255)
-			-- Update hover visual
-			onTemplateSelected()
-		end)
-	end
+
+	propsLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+		propsContainer.CanvasSize = UDim2.new(0, 0, 0, propsLayout.AbsoluteContentSize.Y + 8)
+	end)
 	
 	-- Close button
 	local closeButton = Instance.new("TextButton")
 	closeButton.Name = "CloseButton"
-	closeButton.Size = UDim2.new(1, -20, 0, 40)
-	closeButton.Position = UDim2.new(0, 10, 1, -50)
+	closeButton.Size = UDim2.new(0, 170, 0, 34)
+	closeButton.Position = UDim2.new(1, -180, 0, 8)
 	closeButton.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
-	closeButton.Text = "Close Build Mode"
+	closeButton.Text = "Exit Build Mode"
 	closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-	closeButton.TextSize = 16
+	closeButton.TextSize = 14
 	closeButton.Font = Enum.Font.GothamBold
 	closeButton.Parent = mainFrame
 	
@@ -158,6 +411,8 @@ local function createUI()
 	toggleButton.MouseButton1Click:Connect(function()
 		toggleBuildMode(not isBuildMode)
 	end)
+
+	populateCategoryItems(screenGui, selectedCategory)
 	
 	return screenGui
 end
@@ -261,12 +516,14 @@ local function createHoverVisual()
 	
 	if not selectedTemplate then return end
 	
-	local template = propTemplates:FindFirstChild(selectedTemplate)
+	local template = getTemplateForPlacement(selectedTemplate)
 	if not template then return end
+	local templatePart = getPreviewPrimaryPart(template)
+	if not templatePart then return end
 	
 	hoverVisual = Instance.new("Part")
 	hoverVisual.Name = "HoverVisual"
-	hoverVisual.Size = template.Size
+	hoverVisual.Size = templatePart.Size
 	hoverVisual.Transparency = 0.5
 	hoverVisual.Color = Color3.fromRGB(100, 255, 100) -- Green for hover preview
 	hoverVisual.Material = Enum.Material.Neon
@@ -276,7 +533,7 @@ local function createHoverVisual()
 end
 
 -- Update hover visual when template changes
-local function onTemplateSelected()
+onTemplateSelected = function()
 	if isBuildMode and selectedTemplate then
 		createHoverVisual()
 	elseif hoverVisual then
@@ -308,7 +565,7 @@ local function getGridPositionFromMouse()
 end
 
 -- Toggle build mode
-function toggleBuildMode(enabled)
+toggleBuildMode = function(enabled)
 	isBuildMode = enabled
 	ui.MainFrame.Visible = enabled
 	propPlacementRemote:FireServer("SetBuildMode", enabled)
@@ -445,7 +702,7 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		if gridX and gridZ then
 			-- Find prop at this position
 			for propId, propData in pairs(placedProps) do
-				local template = propTemplates:FindFirstChild(propData.templateName)
+				local template = getTemplateForPlacement(propData.templateName)
 				if template then
 					local gridSize = template:GetAttribute("GridSize") or 1
 					for dx = 0, gridSize - 1 do

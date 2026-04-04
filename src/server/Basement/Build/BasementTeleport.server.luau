@@ -6,6 +6,7 @@
 -- Only the owner of the house can use the teleport platforms
 
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 -- ============================================================
 --  CONFIGURATION
@@ -29,11 +30,48 @@ local CONFIG = {
 	SPAWN_POSITION  = Vector3.new(195, -3.85, -254.009),  -- REPLACE with your spawn position
 	TELEPORT_Y_OFFSET = 5,                   -- Height offset above target position
 	DEBOUNCE_TIME   = 1.5,                   -- Seconds before player can teleport again
+
+	TRANSITION_EVENT_FOLDER = "TeleportEvents",
+	TRANSITION_EVENT_NAME   = "TeleportTransition",
+	TRANSITION_CLOSE_TIME   = 0.35,
+	TRANSITION_OPEN_TIME    = 0.35,
+	TRANSITION_HOLD_TIME    = 0.05,
 }
 -- ============================================================
 
 local housesFolder   = workspace:WaitForChild(CONFIG.HOUSES_FOLDER)
 local basementsFolder = workspace:WaitForChild(CONFIG.BASEMENTS_FOLDER)
+
+local transitionFolder = ReplicatedStorage:FindFirstChild(CONFIG.TRANSITION_EVENT_FOLDER)
+if not transitionFolder then
+	transitionFolder = Instance.new("Folder")
+	transitionFolder.Name = CONFIG.TRANSITION_EVENT_FOLDER
+	transitionFolder.Parent = ReplicatedStorage
+end
+
+local transitionEvent = transitionFolder:FindFirstChild(CONFIG.TRANSITION_EVENT_NAME)
+if not transitionEvent then
+	transitionEvent = Instance.new("RemoteEvent")
+	transitionEvent.Name = CONFIG.TRANSITION_EVENT_NAME
+	transitionEvent.Parent = transitionFolder
+end
+
+local function getTouchParts(instance)
+	if not instance then return {} end
+	if instance:IsA("BasePart") then
+		return { instance }
+	end
+	if instance:IsA("Model") then
+		local parts = {}
+		for _, desc in ipairs(instance:GetDescendants()) do
+			if desc:IsA("BasePart") then
+				table.insert(parts, desc)
+			end
+		end
+		return parts
+	end
+	return {}
+end
 
 -- Shared debounce table
 local debounce = {}
@@ -73,6 +111,13 @@ local function teleportPlayer(player, position)
 	rootPart.CFrame = CFrame.new(position + Vector3.new(0, CONFIG.TELEPORT_Y_OFFSET, 0))
 end
 
+local function teleportPlayerWithTransition(player, position)
+	transitionEvent:FireClient(player, "Close", CONFIG.TRANSITION_CLOSE_TIME)
+	task.wait(CONFIG.TRANSITION_CLOSE_TIME + CONFIG.TRANSITION_HOLD_TIME)
+	teleportPlayer(player, position)
+	transitionEvent:FireClient(player, "Open", CONFIG.TRANSITION_OPEN_TIME)
+end
+
 -- ----------------------------------------------------------------
 -- setupDebounce(): returns true if player can teleport, false if on cooldown
 -- ----------------------------------------------------------------
@@ -96,34 +141,37 @@ for i = 1, 4 do
 	end
 
 	local platform = house:FindFirstChild(CONFIG.TO_BASEMENT_PART)
-	if not platform then
+	local platformTouchParts = getTouchParts(platform)
+	if #platformTouchParts == 0 then
 		warn("[BasementTeleport] Could not find " .. CONFIG.TO_BASEMENT_PART .. " in House" .. i)
 		continue
 	end
 
-	platform.Touched:Connect(function(hit)
-		local character = hit.Parent
-		local player = Players:GetPlayerFromCharacter(character)
-		if not player then return end
+	for _, touchPart in ipairs(platformTouchParts) do
+		touchPart.Touched:Connect(function(hit)
+			local character = hit.Parent
+			local player = Players:GetPlayerFromCharacter(character)
+			if not player then return end
 
-		-- Only the house owner can use this platform
-		local ownedHouseNum = getHouseNumberForPlayer(player)
-		if ownedHouseNum ~= i then
-			print("[BasementTeleport] " .. player.Name .. " does not own House" .. i)
-			return
-		end
+			-- Only the house owner can use this platform
+			local ownedHouseNum = getHouseNumberForPlayer(player)
+			if ownedHouseNum ~= i then
+				print("[BasementTeleport] " .. player.Name .. " does not own House" .. i)
+				return
+			end
 
-		if not checkDebounce(player) then return end
+			if not checkDebounce(player) then return end
 
-		local targetPos = CONFIG.BASEMENT_POSITIONS[i]
-		if not targetPos then
-			warn("[BasementTeleport] No basement position set for House" .. i)
-			return
-		end
+			local targetPos = CONFIG.BASEMENT_POSITIONS[i]
+			if not targetPos then
+				warn("[BasementTeleport] No basement position set for House" .. i)
+				return
+			end
 
-		teleportPlayer(player, targetPos)
-		print("[BasementTeleport] " .. player.Name .. " teleported to Basement " .. i)
-	end)
+			teleportPlayerWithTransition(player, targetPos)
+			print("[BasementTeleport] " .. player.Name .. " teleported to Basement " .. i)
+		end)
+	end
 end
 
 -- ----------------------------------------------------------------
@@ -137,31 +185,34 @@ for i = 1, 4 do
 	end
 
 	local platform = basement:FindFirstChild(CONFIG.TO_SPAWN_PART)
-	if not platform then
+	local platformTouchParts = getTouchParts(platform)
+	if #platformTouchParts == 0 then
 		warn("[BasementTeleport] Could not find " .. CONFIG.TO_SPAWN_PART .. " in Basement" .. i)
 		continue
 	end
 
-	platform.Touched:Connect(function(hit)
-		local character = hit.Parent
-		local player = Players:GetPlayerFromCharacter(character)
-		if not player then return end
-		if player:GetAttribute("BuildModeActive") then
-			return
-		end
+	for _, touchPart in ipairs(platformTouchParts) do
+		touchPart.Touched:Connect(function(hit)
+			local character = hit.Parent
+			local player = Players:GetPlayerFromCharacter(character)
+			if not player then return end
+			if player:GetAttribute("BuildModeActive") then
+				return
+			end
 
-		-- Only the owner of this basement can use this platform
-		local ownedHouseNum = getHouseNumberForPlayer(player)
-		if ownedHouseNum ~= i then
-			print("[BasementTeleport] " .. player.Name .. " does not own Basement" .. i)
-			return
-		end
+			-- Only the owner of this basement can use this platform
+			local ownedHouseNum = getHouseNumberForPlayer(player)
+			if ownedHouseNum ~= i then
+				print("[BasementTeleport] " .. player.Name .. " does not own Basement" .. i)
+				return
+			end
 
-		if not checkDebounce(player) then return end
+			if not checkDebounce(player) then return end
 
-		teleportPlayer(player, CONFIG.SPAWN_POSITION)
-		print("[BasementTeleport] " .. player.Name .. " teleported to spawn")
-	end)
+			teleportPlayerWithTransition(player, CONFIG.SPAWN_POSITION)
+			print("[BasementTeleport] " .. player.Name .. " teleported to spawn")
+		end)
+	end
 end
 
 print("[BasementTeleport] Teleport system loaded for " .. 4 .. " houses.")
