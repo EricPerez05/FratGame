@@ -38,6 +38,7 @@ local purchaseItemRF       = ReplicatedStorage:WaitForChild("PurchaseItem")
 -- ============================================================
 local propTemplates   = ReplicatedStorage:WaitForChild(CONFIG.PROP_TEMPLATES)
 local basementsFolder = workspace:WaitForChild(CONFIG.BASEMENTS_FOLDER)
+local buildModeFolder = nil
 
 -- ============================================================
 --  STORE DATA
@@ -81,28 +82,36 @@ local function getBasementFloorInfo(basementNumber)
 	local basement = basementsFolder:FindFirstChild("Basement" .. basementNumber)
 	if not basement then return nil end
 
-	local mainRoom = basement:FindFirstChild("Main Room")
-	if mainRoom then
-		local floor = mainRoom:FindFirstChild("ConcreteFloor")
-		if floor then
-			return {
-				position = floor.Position,
-				size     = floor.Size,
-				topY     = floor.Position.Y + floor.Size.Y / 2
-			}
+	local bestConcrete = nil
+	local bestConcreteArea = -1
+	local bestAnyFloor = nil
+	local bestAnyArea = -1
+
+	for _, descendant in ipairs(basement:GetDescendants()) do
+		if descendant:IsA("BasePart") and descendant.Name:lower():find("floor") then
+			local area = descendant.Size.X * descendant.Size.Z
+
+			if area > bestAnyArea then
+				bestAnyArea = area
+				bestAnyFloor = descendant
+			end
+
+			if descendant.Name == "ConcreteFloor" and area > bestConcreteArea then
+				bestConcreteArea = area
+				bestConcrete = descendant
+			end
 		end
 	end
 
-	for _, child in pairs(basement:GetDescendants()) do
-		if child:IsA("BasePart") and child.Name:lower():find("floor") then
-			return {
-				position = child.Position,
-				size     = child.Size,
-				topY     = child.Position.Y + child.Size.Y / 2
-			}
-		end
-	end
-	return nil
+	local floor = bestConcrete or bestAnyFloor
+	if not floor then return nil end
+
+	return {
+		position = floor.Position,
+		size = floor.Size,
+		topY = floor.Position.Y + floor.Size.Y / 2,
+		bottomY = floor.Position.Y - floor.Size.Y / 2,
+	}
 end
 
 local function gridToWorld(gridX, gridZ, floorInfo)
@@ -111,25 +120,116 @@ local function gridToWorld(gridX, gridZ, floorInfo)
 	return Vector3.new(worldX, floorInfo.topY + 0.1, worldZ)
 end
 
+local function resolveBuildModeFolder()
+	if buildModeFolder and buildModeFolder.Parent then
+		return buildModeFolder
+	end
+
+	buildModeFolder = ReplicatedStorage:FindFirstChild("Build Mode")
+		or workspace:FindFirstChild("Build Mode")
+		or ReplicatedStorage:FindFirstChild("BuildMode")
+		or workspace:FindFirstChild("BuildMode")
+
+	return buildModeFolder
+end
+
+local function getTemplateForPlacement(templateName)
+	local template = propTemplates:FindFirstChild(templateName) or propTemplates:FindFirstChild(templateName, true)
+	if template then
+		return template
+	end
+
+	local resolvedBuildModeFolder = resolveBuildModeFolder()
+	if resolvedBuildModeFolder then
+		template = resolvedBuildModeFolder:FindFirstChild(templateName, true)
+		if template then
+			return template
+		end
+	end
+
+	return nil
+end
+
+local function placeInstanceAtWorld(instance, worldPos, rotation)
+	if instance:IsA("BasePart") then
+		instance.Position = worldPos
+		instance.Rotation = Vector3.new(0, rotation, 0)
+		return true
+	end
+
+	if instance:IsA("Model") then
+		local _, bboxSize = instance:GetBoundingBox()
+		local pivotPos = Vector3.new(worldPos.X, worldPos.Y + bboxSize.Y * 0.5, worldPos.Z)
+		instance:PivotTo(CFrame.new(pivotPos) * CFrame.Angles(0, math.rad(rotation), 0))
+		return true
+	end
+
+	local model = instance:FindFirstChildWhichIsA("Model", true)
+	if model then
+		return placeInstanceAtWorld(model, worldPos, rotation)
+	end
+
+	local part = instance:FindFirstChildWhichIsA("BasePart", true)
+	if part then
+		local holder = Instance.new("Model")
+		holder.Name = instance.Name
+		instance.Parent = holder
+		placeInstanceAtWorld(holder, worldPos, rotation)
+		return true
+	end
+
+	return false
+end
+
+local function getTemplateGridSize(templateName)
+	local template = getTemplateForPlacement(templateName)
+	if not template then
+		return 1
+	end
+
+	local gridSize = template:GetAttribute("GridSize")
+	if type(gridSize) == "number" and gridSize >= 1 then
+		return math.floor(gridSize)
+	end
+
+	return 1
+end
+
 local function isGridPositionValid(gridX, gridZ, floorInfo)
 	local maxGridX = math.floor(floorInfo.size.X / CONFIG.GRID_SIZE) - 1
 	local maxGridZ = math.floor(floorInfo.size.Z / CONFIG.GRID_SIZE) - 1
 	return gridX >= 0 and gridX <= maxGridX and gridZ >= 0 and gridZ <= maxGridZ
 end
 
-local function isGridPositionOccupied(userId, gridX, gridZ, excludePropId)
+local function normalizePlacementGrid(gridX, gridZ, floorInfo, gridSize)
+	if type(gridX) ~= "number" or type(gridZ) ~= "number" then
+		return nil, nil
+	end
+
+	local maxGridX = math.floor(floorInfo.size.X / CONFIG.GRID_SIZE) - 1
+	local maxGridZ = math.floor(floorInfo.size.Z / CONFIG.GRID_SIZE) - 1
+	local maxOriginX = maxGridX - (gridSize - 1)
+	local maxOriginZ = maxGridZ - (gridSize - 1)
+
+	if maxOriginX < 0 or maxOriginZ < 0 then
+		return nil, nil
+	end
+
+	local snappedX = math.clamp(math.floor(gridX), 0, maxOriginX)
+	local snappedZ = math.clamp(math.floor(gridZ), 0, maxOriginZ)
+	return snappedX, snappedZ
+end
+
+local function isGridPositionOccupied(userId, gridX, gridZ, floorKey, excludePropId)
 	local props = playerProps[userId]
 	if not props then return false end
 	for propId, propData in pairs(props) do
 		if propId ~= excludePropId then
-			local template = propTemplates:FindFirstChild(propData.templateName)
-			if template then
-				local gridSize = template:GetAttribute("GridSize") or 1
-				for dx = 0, gridSize - 1 do
-					for dz = 0, gridSize - 1 do
-						if propData.gridX + dx == gridX and propData.gridZ + dz == gridZ then
-							return true, propId
-						end
+			local gridSize = getTemplateGridSize(propData.templateName)
+			for dx = 0, gridSize - 1 do
+				for dz = 0, gridSize - 1 do
+					if propData.gridX + dx == gridX and propData.gridZ + dz == gridZ then
+						return true, propId
 					end
 				end
 			end
@@ -141,36 +241,46 @@ end
 -- ============================================================
 --  PROP PLACEMENT
 -- ============================================================
-local function placeProp(player, basementNumber, templateName, gridX, gridZ, rotation)
+local function placeProp(player, basementNumber, templateName, gridX, gridZ, rotation, hitWorldPos)
 	local playerHouseNum = getHouseNumberForPlayer(player)
 	if playerHouseNum ~= basementNumber then
 		return false, "You don't own this basement"
 	end
 
 	local userId  = player.UserId
-	local template = propTemplates:FindFirstChild(templateName)
+	local template = getTemplateForPlacement(templateName)
 	if not template then return false, "Invalid prop template" end
 
 	local floorInfo = getBasementFloorInfo(basementNumber)
 	if not floorInfo then return false, "Basement floor not found" end
 
+	local gridSize = getTemplateGridSize(templateName)
+	local normalizedGridX, normalizedGridZ = normalizePlacementGrid(gridX, gridZ, floorInfo, gridSize)
+	if normalizedGridX == nil or normalizedGridZ == nil then
+		return false, "Invalid grid position"
+	end
+
+	gridX, gridZ = normalizedGridX, normalizedGridZ
+
 	if not isGridPositionValid(gridX, gridZ, floorInfo) then
 		return false, "Invalid grid position"
 	end
 
-	local gridSize = template:GetAttribute("GridSize") or 1
 	for dx = 0, gridSize - 1 do
 		for dz = 0, gridSize - 1 do
-			local occupied = isGridPositionOccupied(userId, gridX + dx, gridZ + dz)
+			local occupied = isGridPositionOccupied(userId, gridX + dx, gridZ + dz, nil)
 			if occupied then return false, "Position is occupied" end
 		end
 	end
 
 	local worldPos = gridToWorld(gridX, gridZ, floorInfo)
 	local prop = template:Clone()
-	prop.Name     = templateName
-	prop.Position = worldPos
-	prop.Rotation = Vector3.new(0, rotation, 0)
+	prop.Name = templateName
+
+	if not placeInstanceAtWorld(prop, worldPos, rotation) then
+		prop:Destroy()
+		return false, "Template has no placeable geometry"
+	end
 
 	local propId = HttpService:GenerateGUID(false)
 	prop:SetAttribute("PropId", propId)
@@ -233,31 +343,46 @@ local function savePlayerProps(userId)
 			basementNumber = propData.basementNumber
 		})
 	end
-	pcall(function()
+	local ok, err = pcall(function()
 		propDataStore:SetAsync("Player_" .. userId, data)
 	end)
+	if not ok then
+		warn("[ServerHandlers] Failed to save props for user " .. tostring(userId) .. ": " .. tostring(err))
+	end
 end
 
 local function loadPlayerProps(player)
 	local userId  = player.UserId
+	local basementNumber = getHouseNumberForPlayer(player)
+	if not basementNumber then
+		return false
+	end
+
 	local success, data = pcall(function()
 		return propDataStore:GetAsync("Player_" .. userId)
 	end)
-	if not success or not data then return end
+	if not success then
+		warn("[ServerHandlers] Failed to load props for " .. player.Name)
+		return false
+	end
+	if not data then
+		playerProps[userId] = {}
+		return true
+	end
 
 	playerProps[userId] = {}
-	local basementNumber = getHouseNumberForPlayer(player)
-	if not basementNumber then return end
 
 	for _, propData in ipairs(data) do
 		if propData.basementNumber == basementNumber then
-			local template  = propTemplates:FindFirstChild(propData.templateName)
+			local template  = getTemplateForPlacement(propData.templateName)
 			local floorInfo = getBasementFloorInfo(basementNumber)
 			if template and floorInfo then
 				local worldPos = gridToWorld(propData.gridX, propData.gridZ, floorInfo)
 				local prop = template:Clone()
-				prop.Position = worldPos
-				prop.Rotation = Vector3.new(0, propData.rotation, 0)
+				if not placeInstanceAtWorld(prop, worldPos, propData.rotation) then
+					prop:Destroy()
+					continue
+				end
 				prop:SetAttribute("PropId", propData.propId)
 				prop:SetAttribute("GridX",  propData.gridX)
 				prop:SetAttribute("GridZ",  propData.gridZ)
@@ -283,6 +408,24 @@ local function loadPlayerProps(player)
 		end
 	end
 	print("[ServerHandlers] Loaded props for " .. player.Name)
+	return true
+end
+
+local function queueLoadPlayerProps(player)
+	task.spawn(function()
+		for _ = 1, 30 do
+			if not player.Parent then
+				return
+			end
+
+			if loadPlayerProps(player) then
+				return
+			end
+
+			task.wait(1)
+		end
+		warn("[ServerHandlers] Timed out waiting to load props for " .. player.Name)
+	end)
 end
 
 local function saveAllPlayers()
@@ -297,8 +440,8 @@ end
 propPlacementRemote.OnServerEvent:Connect(function(player, action, ...)
 	local args = {...}
 	if action == "PlaceProp" then
-		local basementNumber, templateName, gridX, gridZ, rotation = unpack(args)
-		local success, result = placeProp(player, basementNumber, templateName, gridX, gridZ, rotation)
+		local basementNumber, templateName, gridX, gridZ, rotation, hitWorldPos = unpack(args)
+		local success, result = placeProp(player, basementNumber, templateName, gridX, gridZ, rotation, hitWorldPos)
 		propPlacementRemote:FireClient(player, "PlacePropResult", success, result)
 
 	elseif action == "RemoveProp" then
@@ -412,8 +555,7 @@ end
 -- ============================================================
 Players.PlayerAdded:Connect(function(player)
 	player:SetAttribute("BuildModeActive", false)
-	task.wait(1)
-	loadPlayerProps(player)
+	queueLoadPlayerProps(player)
 end)
 
 Players.PlayerRemoving:Connect(function(player)
@@ -425,10 +567,7 @@ Players.PlayerRemoving:Connect(function(player)
 end)
 
 for _, player in ipairs(Players:GetPlayers()) do
-	task.spawn(function()
-		task.wait(1)
-		loadPlayerProps(player)
-	end)
+	queueLoadPlayerProps(player)
 end
 
 -- ============================================================
