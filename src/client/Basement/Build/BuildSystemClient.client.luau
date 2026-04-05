@@ -12,7 +12,7 @@ local playerGui = player:WaitForChild("PlayerGui")
 
 local propPlacementRemote = ReplicatedStorage:WaitForChild("PropPlacementRemote")
 local propTemplates = ReplicatedStorage:WaitForChild("PropTemplates")
-local buildModeFolder = ReplicatedStorage:FindFirstChild("Build Mode")
+local buildModeFolder = nil
 
 -- Configuration
 local CONFIG = {
@@ -30,17 +30,121 @@ local floorInfo = nil
 local selectedTemplate = nil
 local currentGridParts = {}
 local hoverVisual = nil
+local hoverVisualOffsets = nil
 local placedProps = {}
 local selectedCategory = "bars"
+local availableCategories = {}
+local categoryItems = {}
 
 local toggleBuildMode
 local onTemplateSelected
 
+local function resolveBuildModeFolder()
+	if buildModeFolder and buildModeFolder.Parent then
+		return buildModeFolder
+	end
+
+	buildModeFolder = ReplicatedStorage:FindFirstChild("Build Mode")
+		or workspace:FindFirstChild("Build Mode")
+		or ReplicatedStorage:FindFirstChild("BuildMode")
+		or workspace:FindFirstChild("BuildMode")
+
+	return buildModeFolder
+end
+
+local function isRenderableTemplate(instance)
+	if not instance then return false end
+	if instance:IsA("BasePart") or instance:IsA("Model") then
+		return true
+	end
+
+	for _, descendant in ipairs(instance:GetDescendants()) do
+		if descendant:IsA("BasePart") or descendant:IsA("Model") then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function getCategoryNameForTemplate(template)
+	local categoryAttr = template:GetAttribute("Category")
+	if type(categoryAttr) == "string" and #categoryAttr > 0 then
+		return string.lower(categoryAttr)
+	end
+
+	local lowerName = string.lower(template.Name)
+	if string.find(lowerName, "stool") then
+		return "stools"
+	end
+	if string.find(lowerName, "bar") then
+		return "bars"
+	end
+
+	return "all"
+end
+
+local function addTemplateToCategory(categoryName, template)
+	if not template or not isRenderableTemplate(template) then
+		return
+	end
+
+	if not categoryItems[categoryName] then
+		categoryItems[categoryName] = {}
+		table.insert(availableCategories, categoryName)
+	end
+
+	for _, existingTemplate in ipairs(categoryItems[categoryName]) do
+		if existingTemplate.Name == template.Name then
+			return
+		end
+	end
+
+	table.insert(categoryItems[categoryName], template)
+end
+
+local function rebuildCatalogIndex()
+	availableCategories = {}
+	categoryItems = {}
+
+	local resolvedBuildModeFolder = resolveBuildModeFolder()
+	if resolvedBuildModeFolder and resolvedBuildModeFolder:IsA("Folder") then
+		for _, categoryFolder in ipairs(resolvedBuildModeFolder:GetChildren()) do
+			if categoryFolder:IsA("Folder") then
+				local categoryName = string.lower(categoryFolder.Name)
+				for _, template in ipairs(categoryFolder:GetChildren()) do
+					addTemplateToCategory(categoryName, template)
+				end
+			end
+		end
+	end
+
+	if #availableCategories == 0 then
+		for _, template in ipairs(propTemplates:GetChildren()) do
+			local categoryName = getCategoryNameForTemplate(template)
+			addTemplateToCategory(categoryName, template)
+		end
+	end
+
+	table.sort(availableCategories, function(a, b)
+		if a == "bars" then return true end
+		if b == "bars" then return false end
+		if a == "stools" then return true end
+		if b == "stools" then return false end
+		return a < b
+	end)
+end
+
 local function getCatalogFolder(categoryName)
-	if buildModeFolder and buildModeFolder:IsA("Folder") then
-		return buildModeFolder:FindFirstChild(categoryName)
+	local resolvedBuildModeFolder = resolveBuildModeFolder()
+	if resolvedBuildModeFolder and resolvedBuildModeFolder:IsA("Folder") then
+		return resolvedBuildModeFolder:FindFirstChild(categoryName)
 	end
 	return nil
+end
+
+local function getTemplatesForCategory(categoryName)
+	return categoryItems[categoryName] or {}
 end
 
 local function getTemplateForPlacement(itemName)
@@ -59,6 +163,19 @@ local function getTemplateForPlacement(itemName)
 	if stools then
 		template = stools:FindFirstChild(itemName) or stools:FindFirstChild(itemName, true)
 		if template then return template end
+	end
+
+	template = propTemplates:FindFirstChild(itemName, true)
+	if template then
+		return template
+	end
+
+	for _, templates in pairs(categoryItems) do
+		for _, categoryTemplate in ipairs(templates) do
+			if categoryTemplate.Name == itemName then
+				return categoryTemplate
+			end
+		end
 	end
 
 	return nil
@@ -170,14 +287,14 @@ local function populateCategoryItems(screenGui, categoryName)
 		end
 	end
 
-	local sourceFolder = getCatalogFolder(categoryName)
-	if not sourceFolder then
-		warn("[BuildModeClient] Missing Build Mode/" .. categoryName .. " folder in ReplicatedStorage")
+	local templates = getTemplatesForCategory(categoryName)
+	if #templates == 0 then
+		warn("[BuildModeClient] No templates found for category " .. categoryName)
 		propsContainer.CanvasSize = UDim2.new(0, 0, 0, 0)
 		return
 	end
 
-	for _, template in ipairs(sourceFolder:GetChildren()) do
+	for _, template in ipairs(templates) do
 		local propButton = Instance.new("TextButton")
 		propButton.Name = template.Name
 		propButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
@@ -295,7 +412,7 @@ local function createUI()
 
 	local tabsFrame = Instance.new("Frame")
 	tabsFrame.Name = "TabsFrame"
-	tabsFrame.Size = UDim2.new(0, 220, 0, 36)
+	tabsFrame.Size = UDim2.new(1, -450, 0, 36)
 	tabsFrame.Position = UDim2.new(0, 250, 0, 6)
 	tabsFrame.BackgroundTransparency = 1
 	tabsFrame.Parent = mainFrame
@@ -308,7 +425,7 @@ local function createUI()
 	local function createTabButton(tabName)
 		local tabButton = Instance.new("TextButton")
 		tabButton.Name = tabName
-		tabButton.Size = UDim2.new(0, 100, 1, 0)
+		tabButton.Size = UDim2.new(0, 96, 1, 0)
 		tabButton.BackgroundColor3 = Color3.fromRGB(58, 58, 58)
 		tabButton.Text = string.upper(tabName)
 		tabButton.TextColor3 = Color3.fromRGB(240, 240, 240)
@@ -338,9 +455,21 @@ local function createUI()
 		return tabButton
 	end
 
-	local barsTab = createTabButton("bars")
-	local stoolsTab = createTabButton("stools")
-	barsTab.BackgroundColor3 = Color3.fromRGB(95, 140, 220)
+	rebuildCatalogIndex()
+	if #availableCategories == 0 then
+		warn("[BuildModeClient] No furniture templates found in PropTemplates or Build Mode")
+	else
+		if not categoryItems[selectedCategory] then
+			selectedCategory = availableCategories[1]
+		end
+
+		for _, categoryName in ipairs(availableCategories) do
+			local tabButton = createTabButton(categoryName)
+			if categoryName == selectedCategory then
+				tabButton.BackgroundColor3 = Color3.fromRGB(95, 140, 220)
+			end
+		end
+	end
 	
 	-- Props container
 	local propsContainer = Instance.new("ScrollingFrame")
@@ -412,7 +541,9 @@ local function createUI()
 		toggleBuildMode(not isBuildMode)
 	end)
 
-	populateCategoryItems(screenGui, selectedCategory)
+	if #availableCategories > 0 then
+		populateCategoryItems(screenGui, selectedCategory)
+	end
 	
 	return screenGui
 end
@@ -513,23 +644,64 @@ local function createHoverVisual()
 		hoverVisual:Destroy()
 		hoverVisual = nil
 	end
+	hoverVisualOffsets = nil
 	
 	if not selectedTemplate then return end
 	
 	local template = getTemplateForPlacement(selectedTemplate)
 	if not template then return end
-	local templatePart = getPreviewPrimaryPart(template)
-	if not templatePart then return end
-	
-	hoverVisual = Instance.new("Part")
+	local renderSource = resolveRenderableInstance(template)
+	if not renderSource then return end
+
+	hoverVisual = renderSource:Clone()
 	hoverVisual.Name = "HoverVisual"
-	hoverVisual.Size = templatePart.Size
-	hoverVisual.Transparency = 0.5
-	hoverVisual.Color = Color3.fromRGB(100, 255, 100) -- Green for hover preview
-	hoverVisual.Material = Enum.Material.Neon
-	hoverVisual.Anchored = true
-	hoverVisual.CanCollide = false
 	hoverVisual.Parent = workspace.CurrentCamera
+
+	if hoverVisual:IsA("BasePart") then
+		hoverVisual.Anchored = true
+		hoverVisual.CanCollide = false
+		hoverVisual.CanQuery = false
+		hoverVisual.Transparency = 0.5
+		hoverVisual.Color = Color3.fromRGB(100, 255, 100)
+		hoverVisual.Material = Enum.Material.Neon
+		hoverVisualOffsets = {
+			isModel = false,
+			halfHeight = hoverVisual.Size.Y * 0.5,
+		}
+		return
+	end
+
+	if hoverVisual:IsA("Model") then
+		for _, desc in ipairs(hoverVisual:GetDescendants()) do
+			if desc:IsA("BasePart") then
+				desc.Anchored = true
+				desc.CanCollide = false
+				desc.CanQuery = false
+				desc.Transparency = 0.5
+				desc.Color = Color3.fromRGB(100, 255, 100)
+				desc.Material = Enum.Material.Neon
+				desc.AssemblyLinearVelocity = Vector3.zero
+				desc.AssemblyAngularVelocity = Vector3.zero
+			end
+		end
+
+		local pivot = hoverVisual:GetPivot()
+		local bboxCFrame, bboxSize = hoverVisual:GetBoundingBox()
+		local bottomY = bboxCFrame.Position.Y - bboxSize.Y * 0.5
+		hoverVisualOffsets = {
+			isModel = true,
+			pivotToBBoxCenterXZ = Vector3.new(
+				pivot.Position.X - bboxCFrame.Position.X,
+				0,
+				pivot.Position.Z - bboxCFrame.Position.Z
+			),
+			pivotToBottomY = pivot.Position.Y - bottomY,
+		}
+		return
+	end
+
+	hoverVisual:Destroy()
+	hoverVisual = nil
 end
 
 -- Update hover visual when template changes
@@ -544,24 +716,27 @@ end
 
 -- Get grid position from mouse
 local function getGridPositionFromMouse()
-	if not floorInfo then return nil, nil end
-	
+	if not floorInfo then
+		return nil, nil
+	end
+
 	local mouse = player:GetMouse()
 	local ray = workspace.CurrentCamera:ViewportPointToRay(mouse.X, mouse.Y)
-	
-	local rayParams = RaycastParams.new()
-	rayParams.FilterType = Enum.RaycastFilterType.Exclude
-	rayParams.FilterDescendantsInstances = {player.Character or nil}
-	
-	local result = workspace:Raycast(ray.Origin, ray.Direction * 1000, rayParams)
-	
-	if result and result.Position then
-		local gridX = math.floor((result.Position.X - floorInfo.position.X + floorInfo.size.X / 2) / CONFIG.GRID_SIZE)
-		local gridZ = math.floor((result.Position.Z - floorInfo.position.Z + floorInfo.size.Z / 2) / CONFIG.GRID_SIZE)
-		return gridX, gridZ
+	local dirY = ray.Direction.Y
+
+	if math.abs(dirY) < 0.00001 then
+		return nil, nil
 	end
-	
-	return nil, nil
+
+	local t = (floorInfo.topY - ray.Origin.Y) / dirY
+	if t <= 0 then
+		return nil, nil
+	end
+
+	local hitPosition = ray.Origin + ray.Direction * t
+	local gridX = math.floor((hitPosition.X - floorInfo.position.X + floorInfo.size.X / 2) / CONFIG.GRID_SIZE)
+	local gridZ = math.floor((hitPosition.Z - floorInfo.position.Z + floorInfo.size.Z / 2) / CONFIG.GRID_SIZE)
+	return gridX, gridZ, floorInfo, hitPosition
 end
 
 -- Toggle build mode
@@ -674,13 +849,25 @@ RunService.RenderStepped:Connect(function()
 		return
 	end
 	
-	local gridX, gridZ = getGridPositionFromMouse()
+	local gridX, gridZ, snapFloorInfo = getGridPositionFromMouse()
 	if gridX and gridZ then
 		-- Update hover visual position
-		if hoverVisual and selectedTemplate then
-			local worldX = floorInfo.position.X - floorInfo.size.X / 2 + (gridX + 0.5) * CONFIG.GRID_SIZE
-			local worldZ = floorInfo.position.Z - floorInfo.size.Z / 2 + (gridZ + 0.5) * CONFIG.GRID_SIZE
-			hoverVisual.Position = Vector3.new(worldX, floorInfo.topY + hoverVisual.Size.Y / 2 + 0.1, worldZ)
+		if hoverVisual and selectedTemplate and hoverVisualOffsets then
+			local useFloorInfo = snapFloorInfo or floorInfo
+			local worldX = useFloorInfo.position.X - useFloorInfo.size.X / 2 + (gridX + 0.5) * CONFIG.GRID_SIZE
+			local worldZ = useFloorInfo.position.Z - useFloorInfo.size.Z / 2 + (gridZ + 0.5) * CONFIG.GRID_SIZE
+			local floorY = useFloorInfo.topY + 0.1
+
+			if hoverVisualOffsets.isModel then
+				local pivotPos = Vector3.new(
+					worldX + hoverVisualOffsets.pivotToBBoxCenterXZ.X,
+					floorY + hoverVisualOffsets.pivotToBottomY,
+					worldZ + hoverVisualOffsets.pivotToBBoxCenterXZ.Z
+				)
+				hoverVisual:PivotTo(CFrame.new(pivotPos))
+			else
+				hoverVisual.Position = Vector3.new(worldX, floorY + hoverVisualOffsets.halfHeight, worldZ)
+			end
 		end
 	end
 end)
@@ -690,9 +877,9 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed then return end
 	
 	if input.UserInputType == Enum.UserInputType.MouseButton1 and isBuildMode and selectedTemplate then
-		local gridX, gridZ = getGridPositionFromMouse()
+		local gridX, gridZ, _, hitWorldPos = getGridPositionFromMouse()
 		if gridX and gridZ then
-			propPlacementRemote:FireServer("PlaceProp", currentBasementNumber, selectedTemplate, gridX, gridZ, 0)
+			propPlacementRemote:FireServer("PlaceProp", currentBasementNumber, selectedTemplate, gridX, gridZ, 0, hitWorldPos)
 		end
 	end
 	
